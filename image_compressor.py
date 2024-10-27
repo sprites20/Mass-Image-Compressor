@@ -15,6 +15,7 @@ from kivy.uix.togglebutton import ToggleButton
 from kivy.clock import Clock
 from kivy.uix.anchorlayout import AnchorLayout
 import platform
+import ffmpeg
 
 # Compression Functions
 def calculate_mse(image1, image2):
@@ -228,19 +229,22 @@ class CompressionScreen(Screen):
         
         # Output file path (always MP4)
         output_video_path = os.path.join(output_directory, f'compressed_{filename}.mp4')
-
+        """
         # Get the original frame rate (use ffprobe to retrieve it)
         original_frame_rate = subprocess.check_output(
             f'ffprobe -v 0 -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "{input_video_path}"',
             shell=True
         ).decode().strip()
-
-        # FFmpeg command to compress video using CRF while preserving frame rate
-        ffmpeg_command = (f'ffmpeg -y -i "{input_video_path}" -c:v libx264 -crf {crf_value} '
-                  f'-b:v 200k -c:a aac -b:a 128k -pix_fmt yuv420p -r 15 "{output_video_path}"')
+        """
         try:
-            # Run the compression command
-            subprocess.run(ffmpeg_command, shell=True, check=True)
+            # Use ffmpeg-python to compress the video
+            (
+                ffmpeg
+                .input(input_video_path, r=15)  # Set input frame rate
+                .output(output_video_path, vcodec='libx264', crf=crf_value, 
+                         acodec='aac', b='128k', pix_fmt='yuv420p')
+                .run(overwrite_output=True)  # Overwrite the output file if it exists
+            )
 
             # Check the size of the compressed file
             compressed_size = os.path.getsize(output_video_path)
@@ -251,8 +255,8 @@ class CompressionScreen(Screen):
                            f'Compressed Size: {compressed_size / 1024:.2f} KB\n')
             # Output result
             Clock.schedule_once(lambda dt: self.change_output(result_text), 0)
-        except subprocess.CalledProcessError:
-            self.change_output(f'Failed to compress {filename}.\n')
+        except ffmpeg.Error as e:
+            self.change_output(f'Failed to compress {filename}. Error: {e.stderr.decode()}\n')
 
     def finalize_results(self):
         # Enable the button after processing

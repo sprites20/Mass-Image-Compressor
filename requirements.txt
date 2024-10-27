@@ -2,3 +2,4 @@ kivy==2.3.0
 Kivy_examples==2.2.1
 numpy==1.20.3
 Pillow==11.0.0
+ffmpeg-python
