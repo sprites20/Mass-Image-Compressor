@@ -2,6 +2,7 @@ import os
 import numpy as np
 from PIL import Image
 from io import BytesIO
+import subprocess  # Import subprocess for video processing
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -13,6 +14,7 @@ from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.togglebutton import ToggleButton
 from kivy.clock import Clock
 from kivy.uix.anchorlayout import AnchorLayout
+import platform
 
 # Compression Functions
 def calculate_mse(image1, image2):
@@ -36,7 +38,6 @@ class CompressionScreen(Screen):
         self.total_original_size = 0  # Initialize total original size
         self.total_compressed_size = 0  # Initialize total compressed size
 
-    # Compression Screen
     def build(self):
         # Main layout with AnchorLayout to position widgets at the top
         root_layout = AnchorLayout(anchor_y='top')
@@ -76,8 +77,16 @@ class CompressionScreen(Screen):
 
         main_layout.add_widget(self.path_box)
 
+        # Toggle buttons for selecting compression type
+        self.compress_type_toggle = BoxLayout(orientation='horizontal', size_hint=(1, None), height=50)
+        self.image_toggle = ToggleButton(text='Compress Images', group='compress_type', state='down')
+        self.video_toggle = ToggleButton(text='Compress Videos', group='compress_type', state='normal')
+        self.compress_type_toggle.add_widget(self.image_toggle)
+        self.compress_type_toggle.add_widget(self.video_toggle)
+        main_layout.add_widget(self.compress_type_toggle)
+
         # Button Section
-        self.process_button = Button(text='Compress Images', size_hint_y=None, height=50, on_press=self.start_compression)
+        self.process_button = Button(text='Start Compression', size_hint_y=None, height=50, on_press=self.start_compression)
         main_layout.add_widget(self.process_button)
 
         # Settings Button
@@ -101,10 +110,10 @@ class CompressionScreen(Screen):
         
         # Add root layout to the screen
         self.add_widget(root_layout)
+
     def go_to_settings(self, instance):
         # Switch to Settings screen
         self.manager.current = 'settings'
-
 
     def update_selected_path(self, instance, value):
         """Update the selected path input when the file chooser path changes."""
@@ -117,26 +126,40 @@ class CompressionScreen(Screen):
             self.current_file_index = 0  # Reset the file index
             self.total_original_size = 0  # Reset total original size
             self.total_compressed_size = 0  # Reset total compressed size
-            Clock.schedule_once(self.process_next_image, 0)  # Schedule the first image processing
-
-    def process_next_image(self, dt):
+            
+            # Start the processing in a new thread
+            Clock.schedule_once(self.process_next_file, 0)  # Schedule the next file processing
+    def change_output(self, result):
+        self.result_text_input.text = result
+    def process_next_file(self, dt):
         # Get the selected path from the FileChooser
         input_directory = self.selected_path_input.text
         output_directory = self.output_dir_input.text
 
         if input_directory:
             if os.path.isdir(input_directory):
-                files = [f for f in os.listdir(input_directory) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                if self.image_toggle.state == 'down':
+                    # Process images
+                    files = [f for f in os.listdir(input_directory) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+                else:
+                    # Process videos
+                    files = [f for f in os.listdir(input_directory) if f.lower().endswith(('.mp4', '.avi', '.mov', ".wmv"))]
+                
                 if self.current_file_index < len(files):
                     filename = files[self.current_file_index]
-                    input_image_path = os.path.join(input_directory, filename)
+                    input_file_path = os.path.join(input_directory, filename)
 
-                    # Process the image
-                    self.compress_image(input_image_path, filename, output_directory)
+                    if self.image_toggle.state == 'down':
+                        # Process the image
+                        self.compress_image(input_file_path, filename, output_directory)
+                    else:
+                        # Process the video
+                        self.compress_video(input_file_path, filename, output_directory)
+                    
                     self.current_file_index += 1  # Move to the next file
-                    Clock.schedule_once(self.process_next_image, 0)  # Schedule the next image processing
+                    Clock.schedule_once(self.process_next_file, 0)  # Schedule the next file processing
                 else:
-                    self.finalize_results()  # Finalize results after processing all images
+                    self.finalize_results()  # Finalize results after processing all files
             else:
                 self.result_text_input.text = 'Please select a valid input directory.'
         else:
@@ -145,14 +168,13 @@ class CompressionScreen(Screen):
     def compress_image(self, input_image_path, filename, output_directory):
         original_size = os.path.getsize(input_image_path)
         self.total_original_size += original_size  # Accumulate original size
-        #self.result_text_input.text = f'Processing: {filename}...'
 
         with Image.open(input_image_path) as original:
             original = original.convert('RGB')
 
             best_image = None
             best_image_details = None
-            qualities = [85, 70, 50, 30, 20, 10, 5, 2]  # Quality levels
+            qualities = [85, 70, 50, 30]  # Quality levels
 
             for quality in qualities:
                 with BytesIO() as img_byte_arr:
@@ -186,24 +208,58 @@ class CompressionScreen(Screen):
                     f.write(best_image)
 
                 self.total_compressed_size += best_image_details[3]  # Accumulate compressed size
-                # Update the results output
-                result_text = f'Saved: {output_image_path}, Quality: {best_image_details[0]}, MSE: {best_image_details[1]:.2f}, PSNR: {best_image_details[2]:.2f}, Original Size: {original_size / 1024:.2f} KB, Compressed Size: {best_image_details[3] / 1024:.2f} KB'
                 
+                # Prepare the result text
+                result_text = f'Saved: {output_image_path}, Quality: {best_image_details[0]}, ' \
+                              f'MSE: {best_image_details[1]:.2f}, PSNR: {best_image_details[2]:.2f}, ' \
+                              f'Original Size: {original_size / 1024:.2f} KB, Compressed Size: {best_image_details[3] / 1024:.2f} KB'
+                # Schedule the result text update
                 Clock.schedule_once(lambda dt: self.change_output(result_text), 0)
-    def change_output(self, result):
-        self.result_text_input.text = result
-    def finalize_results(self):
-        # Show final results and calculate compression ratio
-        if self.total_compressed_size > 0:
-            overall_compression_ratio = self.total_original_size / self.total_compressed_size
-            self.result_text_input.text += f'\nTotal Original Size: {self.total_original_size / (1024 * 1024):.2f} MB'
-            self.result_text_input.text += f'\nTotal Compressed Size: {self.total_compressed_size / (1024 * 1024):.2f} MB'
-            self.result_text_input.text += f'\nOverall Compression Ratio: {overall_compression_ratio:.2f}'
-        else:
-            self.result_text_input.text += 'No images were compressed successfully.'
+            else:
+                self.change_output(f'Could not compress {filename} within acceptable limits.\n')
 
-        self.process_button.disabled = False  # Re-enable the button after processing
-        self.is_processing = False  # Reset the processing flag
+
+    def compress_video(self, input_video_path, filename, output_directory, crf_value="30"):
+        original_size = os.path.getsize(input_video_path)
+        self.total_original_size += original_size  # Accumulate original size
+
+        # Ensure the output directory exists
+        os.makedirs(output_directory, exist_ok=True)
+        
+        # Output file path (always MP4)
+        output_video_path = os.path.join(output_directory, f'compressed_{filename}.mp4')
+
+        # Get the original frame rate (use ffprobe to retrieve it)
+        original_frame_rate = subprocess.check_output(
+            f'ffprobe -v 0 -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "{input_video_path}"',
+            shell=True
+        ).decode().strip()
+
+        # FFmpeg command to compress video using CRF while preserving frame rate
+        ffmpeg_command = (f'ffmpeg -y -i "{input_video_path}" -c:v libx264 -crf {crf_value} '
+                  f'-b:v 200k -c:a aac -b:a 128k -pix_fmt yuv420p -r 15 "{output_video_path}"')
+        try:
+            # Run the compression command
+            subprocess.run(ffmpeg_command, shell=True, check=True)
+
+            # Check the size of the compressed file
+            compressed_size = os.path.getsize(output_video_path)
+            self.total_compressed_size += compressed_size  # Accumulate compressed size
+
+            # Generate result text
+            result_text = (f'Saved: {output_video_path}, Original Size: {original_size / 1024:.2f} KB, '
+                           f'Compressed Size: {compressed_size / 1024:.2f} KB\n')
+            # Output result
+            Clock.schedule_once(lambda dt: self.change_output(result_text), 0)
+        except subprocess.CalledProcessError:
+            self.change_output(f'Failed to compress {filename}.\n')
+
+    def finalize_results(self):
+        # Enable the button after processing
+        self.process_button.disabled = False
+        self.is_processing = False  # Reset processing flag
+        total_text = f'Total Original Size: {self.total_original_size}, Total Compressed Size: {self.total_compressed_size}\nCompression Ratio: {self.total_original_size/self.total_compressed_size}'
+        self.result_text_input.text += total_text
 
 # Settings Screen
 class SettingsScreen(Screen):
@@ -212,47 +268,30 @@ class SettingsScreen(Screen):
         self.build()
 
     def build(self):
-        main_layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical')
 
-        # Overwrite files toggle
-        self.overwrite_toggle = ToggleButton(text='Overwrite Files', group='overwrite', state='normal')
-        main_layout.add_widget(self.overwrite_toggle)
+        # Overwrite Files Checkbox
+        self.overwrite_checkbox = ToggleButton(text='Overwrite Original Files', group='overwrite', state='normal')
+        layout.add_widget(self.overwrite_checkbox)
 
-        # Include subdirectories toggle
-        self.include_subdirs_toggle = ToggleButton(text='Include Subdirectories', group='subdirs', state='normal')
-        main_layout.add_widget(self.include_subdirs_toggle)
-
-        # Back to Compression button
-        back_button = Button(text='Back to Compression', size_hint_y=None, height=50, on_press=self.go_back)
-        main_layout.add_widget(back_button)
-
-        self.add_widget(main_layout)
+        # Settings layout and back button
+        back_button = Button(text='Back to Compression', on_press=self.go_back)
+        layout.add_widget(back_button)
+        self.add_widget(layout)
 
     def go_back(self, instance):
-        # Save settings to the app object
-        app = App.get_running_app()
-        if app.get_name() == "ImageCompressorApp":
-            app.settings['overwrite_files'] = self.overwrite_toggle.state == 'down'
-            app.settings['include_subdirectories'] = self.include_subdirs_toggle.state == 'down'
-            self.manager.current = 'compress'  # Switch back to CompressionScreen
+        # Switch back to Compression screen
+        self.manager.current = 'compression'
 
-# Kivy App Class
-class ImageCompressorApp(App):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.settings = {'overwrite_files': False, 'include_subdirectories': False}
-
+# Main Application
+class MyApp(App):
     def build(self):
-        # Create a ScreenManager
+        self.title = 'Image and Video Compression App'
         sm = ScreenManager()
-
-        # Add CompressionScreen and SettingsScreen to the ScreenManager
-        sm.add_widget(CompressionScreen(name='compress'))
+        sm.add_widget(CompressionScreen(name='compression'))
         sm.add_widget(SettingsScreen(name='settings'))
-
+        self.settings = {'overwrite_files': False}  # Settings storage
         return sm
-    def get_name(self):
-        return "ImageCompressorApp"  # Return your app's name here
 
 if __name__ == '__main__':
-    ImageCompressorApp().run()
+    MyApp().run()
